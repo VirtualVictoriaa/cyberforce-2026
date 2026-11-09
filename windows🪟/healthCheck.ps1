@@ -1,5 +1,5 @@
 # Define the report file path
-$reportFile = "C:\Users\loop\Desktop\SecurityHealthCheckReport.txt"
+$reportFile = "C:\Users\blueteam\Logs\SecurityHealthCheckReport.txt"
 
 # Initialize the report
 $report = "Security Health Check Report - $(Get-Date)"
