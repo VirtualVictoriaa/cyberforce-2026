@@ -15,6 +15,10 @@ Make sure this script complies with company policy before running.
 Unlocks all users. 
 We will use this if we accidentally lock all but one user.
 
+### healthCheck.ps1
+Base code from [Windows-Security-Health-Check by A-rjun-saji](https://github.com/A-rjun-saji/Windows-Security-Health-Check).
+Lists admin users, running processes, firewall status, update status, Windows Defender status, recent security events, password policy, disk encryption status, unused services, and open and closed ports. 
+
 ### optimal\_security.ps1
 Sets AD password policy. 
 

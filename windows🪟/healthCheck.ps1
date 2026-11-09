@@ -9,7 +9,7 @@ $report | Out-File -FilePath $reportFile
 function Get-AdminUsers {
     "--------------------" | Out-File -Append -FilePath $reportFile
     "1. Admin Users:" | Out-File -Append -FilePath $reportFile
-    Get-LocalGroupMember -Group "Administrators" | 
+    Get-LocalGroupMember -Group "Key Admins, Enterprise Admins, Schema Admins, Enterprise Key Admins" | 
     Select-Object Name, PrincipalSource | 
     ForEach-Object { $_.Name } | 
     Out-File -Append -FilePath $reportFile

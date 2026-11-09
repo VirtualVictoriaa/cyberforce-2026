@@ -48,7 +48,7 @@
 param(
     # Logging Configuration
     [Parameter(HelpMessage="Path for log files")]
-    [string]$LogPath = "C:\Windows\Logs\Hardening",
+    [string]$LogPath = "C:\Users\blueteam\Logs\Hardening",
     
     # Firewall Configuration
     [Parameter(HelpMessage="Ports to allow through firewall during Quick Harden. Accepts comma-separated port numbers (1-65535).")]
@@ -935,7 +935,7 @@ function Configure-Firewall {
                     
                     $confirmation = ""
                     while($true) {
-                        $confirmation = Prompt-Yes-No -Message "Are these ports correct (y/n)?"
+                        $confirmation = Read-Host "Are these ports correct (y/n)?"
                         if ($confirmation.toLower() -eq "y") {
                             $portsToAllow = $desigPorts
                             $ready = $true
