@@ -1,4 +1,4 @@
-# Western Washington University's repository for CCDC 2026
+# Western Washington University's repository for CyberForce 2026
 
 ## [Clix](./clix)
 Nix scripts used for Nix systems
