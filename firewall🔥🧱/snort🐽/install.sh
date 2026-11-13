@@ -3,7 +3,7 @@ set -euo pipefail
 
 IFACE=""
 RULES_SRC=""
-HOME_NET="10.10.10.0/24"
+HOME_NET="10.0.47.128/27"
 EXTERNAL_NET="any"
 
 SNORT_ETC="/etc/snort"
