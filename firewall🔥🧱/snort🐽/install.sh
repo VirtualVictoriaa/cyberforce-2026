@@ -32,7 +32,7 @@ Options:
 
 Examples:
   $0 -i eth0 -r /root/snort3-community-rules -H 10.0.0.0/24 -E any
-  $0 -i eth0 -r /root/snort3-community-rules -H 10.0.0.1/32 -E any
+  $0 -i eth0 -r /root/snort3-community-rules -H 10.0.47.128/27 -E any
 EOF
 }
 
@@ -69,8 +69,8 @@ fi
 
 # Normalize single IP to /32
 if [[ "$HOME_NET" != */* ]]; then
-  echo "[*] HOME_NET has no CIDR mask; treating it as /32"
-  HOME_NET="${HOME_NET}/32"
+  echo "[*] HOME_NET has no CIDR mask; treating it as /27"
+  HOME_NET="${HOME_NET}/27"
 fi
 
 find_snort_defaults() {
