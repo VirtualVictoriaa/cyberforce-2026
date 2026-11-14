@@ -12,6 +12,8 @@ CUSTOM_RULES_DIR="$RULES_DIR/custom"
 MERGED_RULES="$RULES_DIR/local.rules"
 COMMUNITY_RULES_DIR="/usr/local/etc/rules"
 COMMUNITY_RULES_URL="https://www.snort.org/downloads/community/snort3-community-rules.tar.gz"
+SNORT_VERSION="3.13.2.0"
+DAQ_VERSION="3.0.29"
 CONF_FILE="$SNORT_ETC/snort.lua"
 LOG_DIR="/var/log/snort"
 STATE_DIR="/var/lib/snort"
@@ -83,6 +85,7 @@ fi
 find_snort_defaults() {
   local f
   for f in \
+    /usr/local/etc/snort/snort_defaults.lua \
     /usr/share/snort/snort_defaults.lua \
     /etc/snort/snort_defaults.lua \
     /usr/share/snort/lua/snort_defaults.lua
@@ -92,28 +95,122 @@ find_snort_defaults() {
   return 1
 }
 
-# Install Snort 3 and dependencies
-echo "[+] updating apk indexes"
-# Try package types
-try apk update -y || true
-try pacman -Sy|| true
-try apt-get update -y || true
-try dnf update -y || true
-try yum update -y || true
-try zypper update -y || true
+# Detect supported distributions and install Snort build dependencies.
+if [[ ! -r /etc/os-release ]]; then
+  echo "[!] cannot identify this operating system (/etc/os-release missing)" >&2
+  exit 1
+fi
+. /etc/os-release
+OS_ID="${ID,,}"
 
-echo "[+] installing snort"
-try apk add --no-cache snort libpcap curl || true
-try pacman -S --noconfirm snort libpcap curl || true
-try apt-get install -y snort libpcap0.8 curl || true
-try dnf install -y snort libpcap curl || true
-try yum install -y snort libpcap curl || true
-try zypper install -y snort libpcap1 curl || true
+case "$OS_ID" in
+  debian|ubuntu)
+    PKG_FAMILY="debian"
+    echo "[+] installing build dependencies with apt"
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      autoconf automake bison build-essential ca-certificates cmake curl flex \
+      libdumbnet-dev libhwloc-dev libluajit-5.1-dev liblzma-dev libpcap-dev \
+      libpcre2-dev libssl-dev libtirpc-dev libtool libunwind-dev pkg-config \
+      tar uuid-dev zlib1g-dev
+    ;;
+  opensuse*|sles|sled)
+    PKG_FAMILY="suse"
+    ZLIB_DEV_PACKAGE="zlib-devel"
+    if [[ "${VERSION_ID:-}" == 16* ]] || rpm -q zlib-ng-compat-devel >/dev/null 2>&1; then
+      ZLIB_DEV_PACKAGE="zlib-ng-compat-devel"
+    fi
+    echo "[+] installing build dependencies with zypper"
+    zypper --non-interactive refresh
+    zypper --non-interactive install --no-recommends \
+      autoconf automake bison cmake curl flex gcc gcc-c++ hwloc-devel \
+      libdnet-devel xz-devel libopenssl-devel libpcap-devel libtirpc-devel \
+      libtool libunwind-devel luajit-devel make pcre2-devel pkg-config \
+      tar uuid-devel "$ZLIB_DEV_PACKAGE"
+    ;;
+  alpine)
+    PKG_FAMILY="alpine"
+    echo "[+] installing build dependencies with apk"
+    apk update
+    apk add --no-cache \
+      autoconf automake bison build-base ca-certificates cmake curl flex \
+      hwloc-dev libdnet-dev libpcap-dev libtirpc-dev libtool libunwind-dev \
+      luajit-dev openssl-dev pcre2-dev pkgconf tar util-linux-dev xz-dev zlib-dev
+    ;;
+  *)
+    echo "[!] unsupported distribution: $OS_ID (supported: Debian, Ubuntu, openSUSE, Alpine)" >&2
+    exit 1
+    ;;
+esac
+
+# Build upstream LibDAQ and Snort 3 into /usr/local.
+INSTALL_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$INSTALL_TMP_DIR"' EXIT
+BUILD_DIR="$INSTALL_TMP_DIR/build"
+BUILD_JOBS="${BUILD_JOBS:-2}"
+
+echo "[+] building LibDAQ $DAQ_VERSION"
+mkdir -p "$BUILD_DIR/libdaq"
+curl -fL "https://github.com/snort3/libdaq/archive/refs/tags/v$DAQ_VERSION.tar.gz" \
+  -o "$BUILD_DIR/libdaq.tar.gz"
+tar -xzf "$BUILD_DIR/libdaq.tar.gz" --strip-components=1 -C "$BUILD_DIR/libdaq"
+pushd "$BUILD_DIR/libdaq" >/dev/null
+if [[ -x ./bootstrap ]]; then
+  ./bootstrap
+fi
+./configure --prefix=/usr/local --enable-shared --enable-pcap-module
+make -j"$BUILD_JOBS"
+make install
+popd >/dev/null
+
+DAQ_MODULE_FILE="$(find /usr/local/lib /usr/local/lib64 -type f -name daq_pcap.so -print -quit 2>/dev/null || true)"
+if [[ -z "$DAQ_MODULE_FILE" ]]; then
+  echo "[!] LibDAQ's PCAP module was not installed; check that libpcap development files are available" >&2
+  exit 1
+fi
+DAQ_MODULE_DIR="$(dirname "$DAQ_MODULE_FILE")"
+
+if command -v ldconfig >/dev/null 2>&1; then
+  ldconfig
+fi
+
+echo "[+] building Snort $SNORT_VERSION"
+mkdir -p "$BUILD_DIR/snort"
+curl -fL "https://github.com/snort3/snort3/archive/refs/tags/$SNORT_VERSION.tar.gz" \
+  -o "$BUILD_DIR/snort.tar.gz"
+tar -xzf "$BUILD_DIR/snort.tar.gz" --strip-components=1 -C "$BUILD_DIR/snort"
+pushd "$BUILD_DIR/snort" >/dev/null
+./configure_cmake.sh \
+  --prefix=/usr/local \
+  --without-libml \
+  --disable-html-docs \
+  --disable-pdf-docs \
+  --disable-text-docs
+cmake --build build --parallel "$BUILD_JOBS" 2>&1 | awk '
+  BEGIN { threshold = 10 }
+  match($0, /\[[[:space:]]*[0-9]+%\]/) {
+    progress = substr($0, RSTART, RLENGTH)
+    gsub(/[^0-9]/, "", progress)
+    while (progress + 0 >= threshold && threshold <= 100) {
+      printf "[%3d%%] Snort build\n", threshold
+      fflush()
+      threshold += 10
+    }
+    next
+  }
+  { print; fflush() }
+'
+cmake --install build
+popd >/dev/null
+
+if command -v ldconfig >/dev/null 2>&1; then
+  ldconfig
+fi
 
 # Download and install Snort 3 community rules
 echo "[+] downloading Snort 3 community rules"
-RULES_TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$RULES_TMP_DIR"' EXIT
+RULES_TMP_DIR="$INSTALL_TMP_DIR/rules"
+mkdir -p "$RULES_TMP_DIR"
 curl -fL "$COMMUNITY_RULES_URL" -o "$RULES_TMP_DIR/community-rules.tar.gz"
 tar -xzf "$RULES_TMP_DIR/community-rules.tar.gz" -C "$RULES_TMP_DIR"
 COMMUNITY_ARCHIVE_DIR="$RULES_TMP_DIR/snort3-community-rules"
@@ -125,9 +222,9 @@ mkdir -p "$COMMUNITY_RULES_DIR"
 cp -a "$COMMUNITY_ARCHIVE_DIR/." "$COMMUNITY_RULES_DIR/"
 
 # Verify snort binary and defaults file
-SNORT_BIN="$(command -v snort || true)"
-if [[ -z "$SNORT_BIN" ]]; then
-  echo "[!] snort binary not found after install" >&2
+SNORT_BIN="/usr/local/bin/snort"
+if [[ ! -x "$SNORT_BIN" ]] || ! "$SNORT_BIN" -V 2>&1 | grep -q 'Version 3\.'; then
+  echo "[!] expected a working Snort 3 binary at $SNORT_BIN" >&2
   exit 1
 fi
 
@@ -144,14 +241,28 @@ echo "[+] defaults file: $DEFAULTS_FILE"
 
 # Create snort user/group and directories
 echo "[+] creating snort user/group if needed"
-addgroup -S snort 2>/dev/null || true
+if ! grep -q '^snort:' /etc/group; then
+  if [[ "$PKG_FAMILY" == "alpine" ]]; then
+    addgroup -S snort
+  else
+    groupadd --system snort
+  fi
+fi
 if ! id snort >/dev/null 2>&1; then
-  adduser -S -D -H -h "$STATE_DIR" -s /sbin/nologin -G snort snort
+  if [[ "$PKG_FAMILY" == "alpine" ]]; then
+    adduser -S -D -H -h "$STATE_DIR" -s /sbin/nologin -G snort snort
+  else
+    useradd --system --no-create-home --home-dir "$STATE_DIR" \
+      --shell /usr/sbin/nologin --gid snort snort
+  fi
 fi
 
 # Create directories for Snort configuration, rules, logs, and state
 echo "[+] creating directories"
-mkdir -p "$SNORT_ETC" "$RULES_DIR" "$CUSTOM_RULES_DIR" "$LOG_DIR" "$STATE_DIR" /etc/local.d /etc/conf.d
+mkdir -p "$SNORT_ETC" "$RULES_DIR" "$CUSTOM_RULES_DIR" "$LOG_DIR" "$STATE_DIR"
+if [[ "$PKG_FAMILY" == "alpine" ]]; then
+  mkdir -p /etc/local.d /etc/conf.d
+fi
 chown -R snort:snort "$LOG_DIR" "$STATE_DIR"
 chmod 750 "$LOG_DIR" "$STATE_DIR"
 
@@ -202,12 +313,20 @@ chmod 640 "$MERGED_RULES"
 # Write the Snort 3 configuration file
 echo "[+] writing Snort 3 config"
 cat > "$CONF_FILE" <<EOF
--- autogenerated by install-snort3-alpine.sh
+-- autogenerated by install.sh
 
 include '$DEFAULTS_FILE'
 
 HOME_NET = '$HOME_NET'
 EXTERNAL_NET = '$EXTERNAL_NET'
+
+daq =
+{
+  module_dirs =
+  {
+    '$DAQ_MODULE_DIR'
+  }
+}
 
 local custom_nets =
 {
@@ -256,24 +375,18 @@ chmod 640 "$CONF_FILE"
 echo "[+] testing config"
 "$SNORT_BIN" -T -i "$IFACE" -c "$CONF_FILE" -l "$LOG_DIR" -k none
 
-# Write the local.d runtime configuration
-echo "[+] writing local.d runtime config"
-cat > "$LOCAL_CONF" <<EOF
+# Configure the service manager available on the supported distribution.
+if [[ "$PKG_FAMILY" == "alpine" ]]; then
+  echo "[+] writing OpenRC local service"
+  cat > "$LOCAL_CONF" <<EOF
 SNORT_BIN="$SNORT_BIN"
 SNORT_IFACE="$IFACE"
 SNORT_CONF="$CONF_FILE"
 SNORT_LOG_DIR="$LOG_DIR"
 SNORT_START_LOG="$START_LOG"
-
-# detection mode only:
-# no -Q
-# no NFQUEUE
-# no inline
-SNORT_ARGS="-A alert_fast -k none"
 EOF
 
-echo "[+] writing startup script"
-cat > "$LOCAL_START" <<'EOF'
+  cat > "$LOCAL_START" <<'EOF'
 #!/bin/sh
 set -eu
 . /etc/conf.d/snort-detect
@@ -293,7 +406,8 @@ sleep 1
   -i "$SNORT_IFACE" \
   -c "$SNORT_CONF" \
   -l "$SNORT_LOG_DIR" \
-  $SNORT_ARGS \
+  -A alert_fast \
+  -k none \
   >>"$SNORT_START_LOG" 2>&1 || true
 
 # Give daemon time to settle
@@ -311,22 +425,56 @@ tail -n 50 "$SNORT_START_LOG" 2>/dev/null || true
 exit 1
 EOF
 
-echo "[+] writing stop script"
-cat > "$LOCAL_STOP" <<'EOF'
+  cat > "$LOCAL_STOP" <<'EOF'
 #!/bin/sh
 set -eu
 . /etc/conf.d/snort-detect
 pkill -TERM -f "snort.*-c $SNORT_CONF" 2>/dev/null || true
 EOF
 
-chmod +x "$LOCAL_START" "$LOCAL_STOP"
+  chmod +x "$LOCAL_START" "$LOCAL_STOP"
 
-echo "[+] enabling local service at boot"
-rc-update add local default >/dev/null 2>&1 || true
+  echo "[+] enabling OpenRC local service at boot"
+  rc-update add local default
 
-echo "[+] starting snort"
-"$LOCAL_START"
+  echo "[+] starting Snort"
+  "$LOCAL_START"
+else
+  SERVICE_FILE="/etc/systemd/system/snort-detect.service"
+  if [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "[!] systemd is not running; cannot configure the Snort service" >&2
+    exit 1
+  fi
 
+  echo "[+] writing systemd service"
+  cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Snort 3 Intrusion Detection System
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=snort
+Group=snort
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+ExecStart=$SNORT_BIN -c $CONF_FILE -i $IFACE -l $LOG_DIR -A alert_fast -k none
+Restart=on-failure
+RestartSec=5
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$LOG_DIR $STATE_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  echo "[+] enabling and starting Snort service"
+  systemctl daemon-reload
+  systemctl enable --now snort-detect.service
+fi
 echo
 echo "[+] done"
 echo "[+] config: $CONF_FILE"
