@@ -186,20 +186,9 @@ pushd "$BUILD_DIR/snort" >/dev/null
   --disable-html-docs \
   --disable-pdf-docs \
   --disable-text-docs
-cmake --build build --parallel "$BUILD_JOBS" 2>&1 | awk '
-  BEGIN { threshold = 10 }
-  match($0, /\[[[:space:]]*[0-9]+%\]/) {
-    progress = substr($0, RSTART, RLENGTH)
-    gsub(/[^0-9]/, "", progress)
-    while (progress + 0 >= threshold && threshold <= 100) {
-      printf "[%3d%%] Snort build\n", threshold
-      fflush()
-      threshold += 10
-    }
-    next
-  }
-  { print; fflush() }
-'
+
+echo "[+] compiling Snort $SNORT_VERSION"
+cmake --build build --parallel "$BUILD_JOBS"
 cmake --install build
 popd >/dev/null
 
@@ -373,7 +362,7 @@ chmod 640 "$CONF_FILE"
 
 # Test the Snort configuration
 echo "[+] testing config"
-"$SNORT_BIN" -T -i "$IFACE" -c "$CONF_FILE" -l "$LOG_DIR" -k none
+"$SNORT_BIN" --daq-dir "$DAQ_MODULE_DIR" -T -i "$IFACE" -c "$CONF_FILE" -l "$LOG_DIR" -k none
 
 # Configure the service manager available on the supported distribution.
 if [[ "$PKG_FAMILY" == "alpine" ]]; then
@@ -382,6 +371,7 @@ if [[ "$PKG_FAMILY" == "alpine" ]]; then
 SNORT_BIN="$SNORT_BIN"
 SNORT_IFACE="$IFACE"
 SNORT_CONF="$CONF_FILE"
+SNORT_DAQ_DIR="$DAQ_MODULE_DIR"
 SNORT_LOG_DIR="$LOG_DIR"
 SNORT_START_LOG="$START_LOG"
 EOF
@@ -403,6 +393,7 @@ sleep 1
   -D \
   -u snort \
   -g snort \
+  --daq-dir "$SNORT_DAQ_DIR" \
   -i "$SNORT_IFACE" \
   -c "$SNORT_CONF" \
   -l "$SNORT_LOG_DIR" \
@@ -460,7 +451,7 @@ Group=snort
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 NoNewPrivileges=true
-ExecStart=$SNORT_BIN -c $CONF_FILE -i $IFACE -l $LOG_DIR -A alert_fast -k none
+ExecStart=$SNORT_BIN --daq-dir $DAQ_MODULE_DIR -c $CONF_FILE -i $IFACE -l $LOG_DIR -A alert_fast -k none
 Restart=on-failure
 RestartSec=5
 ProtectSystem=strict
